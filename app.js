@@ -316,7 +316,7 @@ function homeHTML() {
       <li>時間切れか全員が決定すると締め切り。親の「せーので オープン」で、答えが1人ずつ順番に開きます。</li>
       <li>全員そろえばクリア。そろわなければ次のお題へ。</li>
     </ol>
-    <p class="muted" style="margin-top:8px">ひらがな・カタカナ・空白の違いは同じ答えとみなします。表記ゆれは親が「一致にする」で認められます。親は画面を閉じないでください（部屋が終わります）。</p>
+    <p class="muted" style="margin-top:8px">答えは<b>ひらがなで書く</b>のがルールです。ひらがな・カタカナ・空白の違いは同じ答えとみなします（漢字は読みを調べないので一致になりません）。表記ゆれは親が「一致にする」で認められます。親は画面を閉じないでください（部屋が終わります）。</p>
   </div>`;
 }
 
@@ -396,7 +396,8 @@ function gameHTML() {
     </div>
     <div class="card">
       <label for="answer">あなたの答え（ほかの人には見えません）</label>
-      <textarea id="answer" maxlength="40" placeholder="ここに書く"></textarea>
+      <p class="hint">✍️ <b>ひらがなで書いてね</b>（漢字だと、同じ言葉でも一致になりません）</p>
+      <textarea id="answer" maxlength="40" placeholder="ひらがなで書く" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
       <button id="doneBtn" class="btn primary big" data-act="done">これで決定</button>
     </div>
     <div class="card"><h3>書き終わった人</h3><div id="chipsBox"></div>
