@@ -44,7 +44,8 @@ let S = null;              // 親から届いた最新の状態
 let errMsg = '';
 let peer = null, hostConn = null, isHost = false;
 let lastKey = '', myText = '', myDone = false, localDeadline = 0, sendTimer = null;
-const ui = { gen: randTopic(), custom: '', useCustom: false, limit: 60 };
+const COUNTS = [3, 5, 10, 15, 20];
+const ui = { count: 5, limit: 60 };
 
 /* ---------- 親（部屋）の処理 ---------- */
 let H = null;
@@ -60,7 +61,7 @@ function hostCreate() {
     H = {
       room, players: [{ id: myId, name: myName, online: true }], phase: 'lobby', round: 0,
       topic: null, limit: 60, deadline: 0, answers: {}, submitted: {}, order: [], shown: 0,
-      result: null, startedAt: 0, endedAt: 0, log: [],
+      result: null, startedAt: 0, endedAt: 0, log: [], qTotal: 0, used: [], usedThemes: [],
     };
     mode = 'game';
     sync();
@@ -133,6 +134,28 @@ function startRound(topic, limit) {
   sync();
 }
 
+// 同じゲームの中で、同じ頭文字・同じテーマが続けて出ないようにランダムで選ぶ
+function newTopic() {
+  for (let i = 0; i < 200; i++) {
+    const t = randTopic();
+    if (!H.used.includes(t.kana) && !H.usedThemes.includes(t.theme)) { H.used.push(t.kana); H.usedThemes.push(t.theme); return t; }
+    if (H.used.length >= KANA.length) H.used = [];
+    if (H.usedThemes.length >= THEMES.length) H.usedThemes = [];
+  }
+  return randTopic();
+}
+
+function startGame() {
+  if (!H || H.phase !== 'lobby') return;
+  H.qTotal = ui.count; H.used = []; H.usedThemes = [];
+  startRound(newTopic(), ui.limit);
+}
+
+function nextQuestion() {
+  if (!H || H.phase !== 'result' || H.round >= H.qTotal) return;
+  startRound(newTopic(), H.limit);
+}
+
 // 書くのを締め切る。開くのは親の「せーので オープン」を待つ
 function lockWriting(reason) {
   if (!H || H.phase !== 'writing') return;
@@ -180,7 +203,7 @@ function forceMatch() {
   sync();
 }
 
-// 親が「ここで終わる」を押した時。ここまでの成績を出す
+// 最終結果（最後の問題のあと、または親が「途中で終わる」を押した時）
 function endGame() {
   if (!H || H.phase !== 'result') return;
   clearTimers();
@@ -191,7 +214,7 @@ function endGame() {
 
 function resetGame() {
   clearTimers();
-  Object.assign(H, { phase: 'lobby', round: 0, topic: null, answers: {}, submitted: {}, order: [], shown: 0, result: null, startedAt: 0, endedAt: 0, log: [] });
+  Object.assign(H, { phase: 'lobby', round: 0, topic: null, answers: {}, submitted: {}, order: [], shown: 0, result: null, startedAt: 0, endedAt: 0, log: [], qTotal: 0, used: [], usedThemes: [] });
   sync();
 }
 
@@ -216,7 +239,7 @@ function view() {
     reveal: H.order.map((id, i) => ({ id, name: nameOf(id), text: (showAll || i < H.shown) ? (H.answers[id] || '') : null })),
     shown: H.shown, result: H.result, lockReason: H.lockReason || '',
     elapsed: H.startedAt ? (H.endedAt || Date.now()) - H.startedAt : 0,
-    matches: H.log.filter((l) => l.match).length, total: H.log.length,
+    matches: H.log.filter((l) => l.match).length, total: H.log.length, qTotal: H.qTotal,
     log: H.log.slice(0, 40),
   };
 }
@@ -322,18 +345,18 @@ function homeHTML() {
     <ol>
       <li>1人が「部屋を作る」。出てきた4けたの番号を、みんなに伝えます。</li>
       <li>ほかの人は同じページを開き、番号を入れて参加します。</li>
-      <li>親が「お題を出す」と、全員の画面に「〇から始まる△△」が出ます。</li>
+      <li>親が問題数と書く時間を選んで「スタート」。全員の画面に、ランダムなお題「〇から始まる△△」が出ます。</li>
       <li>制限時間のうちに、それぞれ答えを書きます（ほかの人には見えません）。</li>
       <li>時間切れか全員が決定すると締め切り。親が「次の人をオープン」を押すたびに、答えのカードが1枚ずつめくれます。</li>
-      <li>全員そろえば一致！ 一致してもしなくても、次のお題へ続けられます。</li>
-      <li>親が「ここで終わる」を押すと、何問中何問一致したかが出ます。</li>
+      <li>全員そろえば一致！ 一致してもしなくても、次の問題へ進みます。</li>
+      <li>最後の問題が終わると、何問中何問一致したかが出ます。</li>
     </ol>
     <p class="muted" style="margin-top:8px">答えは<b>ひらがなで書く</b>のがルールです。ひらがな・カタカナ・空白の違いは同じ答えとみなします（漢字は読みを調べないので一致になりません）。表記ゆれは親が「一致にする」で認められます。親は画面を閉じないでください（部屋が終わります）。</p>
   </div>`;
 }
 
 function statusHTML() {
-  return `<div class="status"><span>部屋 <span class="room">${esc(S.room)}</span></span><span>${S.round ? S.round + '問目' : '準備中'}・${S.players.filter((p) => p.online).length}人</span></div>`;
+  return `<div class="status"><span>部屋 <span class="room">${esc(S.room)}</span></span><span>${S.round ? S.round + ' / ' + S.qTotal + '問目' : '準備中'}・${S.players.filter((p) => p.online).length}人</span></div>`;
 }
 
 function chipsHTML(withState, kickable) {
@@ -345,18 +368,19 @@ function chipsHTML(withState, kickable) {
   }).join('') + '</div>';
 }
 
-function hostPanelHTML(title) {
-  const opts = [30, 60, 90, 120].map((n) => `<option value="${n}" ${ui.limit === n ? 'selected' : ''}>${n}秒</option>`).join('');
+// 最初の設定（親だけ）。お題は毎回ランダムで出るので選ばない
+function setupPanelHTML() {
+  const counts = COUNTS.map((n) => `<option value="${n}" ${ui.count === n ? 'selected' : ''}>${n}問</option>`).join('');
+  const limits = [30, 60, 90, 120].map((n) => `<option value="${n}" ${ui.limit === n ? 'selected' : ''}>${n}秒</option>`).join('');
   return `
   <div class="card">
-    <h3>${title}</h3>
-    ${ui.useCustom ? '' : `<div class="topic-preview">「${esc(ui.gen.kana)}」から始まる${esc(ui.gen.theme)}</div>
-    <button class="btn ghost" data-act="reroll">別のお題にする</button>`}
-    <label class="check"><input type="checkbox" id="useCustom" ${ui.useCustom ? 'checked' : ''}> 自分でお題を書く</label>
-    ${ui.useCustom ? `<input id="custom" type="text" maxlength="60" placeholder="例：「ち」から始まる、旅行先で買うチョコレート" value="${esc(ui.custom)}">` : ''}
-    <label for="limit">書く時間</label>
-    <select id="limit">${opts}</select>
-    <button class="btn primary big" data-act="start">お題を出す</button>
+    <h3>ゲームの設定</h3>
+    <div class="row">
+      <div><label for="count">問題数</label><select id="count">${counts}</select></div>
+      <div><label for="limit">書く時間</label><select id="limit">${limits}</select></div>
+    </div>
+    <p class="muted" style="margin-top:10px">お題は毎回ランダムで出ます。</p>
+    <button class="btn primary big" data-act="start">スタート</button>
   </div>`;
 }
 
@@ -400,7 +424,7 @@ function gameHTML() {
       <p class="muted" style="margin-top:8px">このURLを送るか、番号を伝えてください。</p>
     </div>
     <div class="card">${statusHTML()}${chipsHTML(false, host)}</div>
-    ${host ? hostPanelHTML('最初のお題') : '<div class="card center"><p class="muted">親がお題を出すのを待っています…</p></div>'}`;
+    ${host ? setupPanelHTML() : '<div class="card center"><p class="muted">親がゲームを始めるのを待っています…</p></div>'}`;
   }
   if (S.phase === 'writing') {
     return `
@@ -461,14 +485,19 @@ function gameHTML() {
     ${statusHTML()}
     <div class="result ${ok ? 'ok' : 'ng'}">
       <div class="t">${ok ? '一致！' : 'そろわず…'}</div>
-      <div>${ok ? (S.result.forced ? '親が一致と認めました。' : 'みんなの答えがそろいました！') : '次のお題で、そろえよう。'}</div>
+      <div>${ok ? (S.result.forced ? '親が一致と認めました。' : 'みんなの答えがそろいました！') : (S.round < S.qTotal ? '次の問題で、そろえよう。' : '惜しい！')}</div>
     </div>
     <div class="topic">${esc(S.topic)}</div>
     ${cardsHTML(true)}
     <div class="stats"><div><b>${S.matches}/${S.total}</b>ここまでの一致</div><div><b>${fmtTime(S.elapsed)}</b>経過</div></div>
     ${host && !ok ? '<button class="btn ghost" data-act="force">表記ゆれなので一致にする</button>' : ''}
   </div>
-  ${host ? hostPanelHTML(`次のお題（${S.round + 1}問目）`) + '<div class="card"><button class="btn" data-act="end">ここで終わる（結果を見る）</button></div>' : '<div class="card center"><p class="muted">親が次のお題を出すのを待っています…</p></div>'}
+  ${host
+    ? (S.round < S.qTotal
+      ? `<div class="card"><button class="btn primary big" data-act="next">次の問題へ（${S.round + 1} / ${S.qTotal}問目）</button>
+         <button class="btn ghost" data-act="end">途中で終わる（結果を見る）</button></div>`
+      : '<div class="card"><button class="btn primary big" data-act="end">最終結果を見る</button></div>')
+    : `<div class="card center"><p class="muted">${S.round < S.qTotal ? '親が次の問題を出すのを待っています…' : '最後の問題でした。親が最終結果を出します…'}</p></div>`}
   ${logHTML()}`;
 }
 
@@ -521,17 +550,9 @@ document.addEventListener('click', (ev) => {
     updateWriting();
   } else if (!isHost) {
     return;
-  } else if (act === 'reroll') { ui.gen = randTopic(); render(); }
-  else if (act === 'start') {
-    let topic = ui.gen;
-    if (ui.useCustom) {
-      const c = ui.custom.trim();
-      if (!c) { const i = $('#custom'); if (i) i.focus(); return; }
-      topic = { custom: c };
-    }
-    ui.gen = randTopic(); ui.custom = '';
-    startRound(topic, ui.limit);
-  } else if (act === 'close') lockWriting('host');
+  } else if (act === 'start') startGame();
+  else if (act === 'next') nextQuestion();
+  else if (act === 'close') lockWriting('host');
   else if (act === 'open') openAnswers();
   else if (act === 'flip') flipNext();
   else if (act === 'force') forceMatch();
@@ -546,12 +567,11 @@ document.addEventListener('input', (ev) => {
     myText = t.value;
     clearTimeout(sendTimer);
     sendTimer = setTimeout(() => sendAnswer(myDone), 300);
-  } else if (t.id === 'custom') ui.custom = t.value;
-  else if (t.id === 'room') t.value = t.value.replace(/\D/g, '').slice(0, 4);
+  } else if (t.id === 'room') t.value = t.value.replace(/\D/g, '').slice(0, 4);
 });
 document.addEventListener('change', (ev) => {
   const t = ev.target;
-  if (t.id === 'useCustom') { ui.useCustom = t.checked; render(); }
+  if (t.id === 'count') ui.count = Number(t.value) || 5;
   else if (t.id === 'limit') ui.limit = Number(t.value) || 60;
 });
 window.addEventListener('beforeunload', (e) => {
