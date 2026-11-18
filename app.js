@@ -148,13 +148,16 @@ function openAnswers() {
   H.phase = 'reveal';
   H.order = H.players.filter((p) => p.online || p.id in H.answers).map((p) => p.id);
   H.shown = 0;
+  if (!H.order.length) { finish(); return; }
+  flipNext(); // 「せーので オープン」で1枚目をめくる
+}
+
+// 親が押すたびに1枚めくる。最後の1枚をめくったら少し間をおいて結果へ
+function flipNext() {
+  if (!H || H.phase !== 'reveal' || H.shown >= H.order.length) return;
+  H.shown += 1;
   sync();
-  const step = () => {
-    H.shown += 1;
-    sync();
-    revealTimer = setTimeout(H.shown >= H.order.length ? finish : step, H.shown >= H.order.length ? 1200 : REVEAL_MS);
-  };
-  revealTimer = setTimeout(step, 1200);
+  if (H.shown >= H.order.length) revealTimer = setTimeout(finish, REVEAL_MS);
 }
 
 function finish() {
@@ -313,7 +316,7 @@ function homeHTML() {
       <li>ほかの人は同じページを開き、番号を入れて参加します。</li>
       <li>親が「お題を出す」と、全員の画面に「〇から始まる△△」が出ます。</li>
       <li>制限時間のうちに、それぞれ答えを書きます（ほかの人には見えません）。</li>
-      <li>時間切れか全員が決定すると締め切り。親の「せーので オープン」で、答えが1人ずつ順番に開きます。</li>
+      <li>時間切れか全員が決定すると締め切り。親が「次の人をオープン」を押すたびに、答えのカードが1枚ずつめくれます。</li>
       <li>全員そろえばクリア。そろわなければ次のお題へ。</li>
     </ol>
     <p class="muted" style="margin-top:8px">答えは<b>ひらがなで書く</b>のがルールです。ひらがな・カタカナ・空白の違いは同じ答えとみなします（漢字は読みを調べないので一致になりません）。表記ゆれは親が「一致にする」で認められます。親は画面を閉じないでください（部屋が終わります）。</p>
@@ -358,11 +361,15 @@ function cardsHTML(final) {
   }
   return '<div class="cards">' + S.reveal.map((r, i) => {
     const open = r.text !== null;
-    let cls = 'acard ' + (open ? 'open' : 'closed');
+    let cls = 'fcard' + (open ? ' flipped' : '');
     if (!final && open && i === S.shown - 1) cls += ' new';
+    if (!final && !open && i === S.shown) cls += ' next';
     if (final && groups) cls += (S.result && S.result.match) || (groups.many && norm(r.text) === groups.top) ? ' same' : ' diff';
-    const ans = open ? (r.text ? esc(r.text) : '（白紙）') : '？';
-    return `<div class="${cls}"><div class="who">${esc(r.name)}</div><div class="ans">${ans}</div></div>`;
+    const ans = open ? (r.text ? esc(r.text) : '（白紙）') : '';
+    return `<div class="${cls}"><div class="inner">
+      <div class="face front"><div class="who">${esc(r.name)}</div><div class="mark">？</div></div>
+      <div class="face back"><div class="who">${esc(r.name)}</div><div class="ans">${ans}</div></div>
+    </div></div>`;
   }).join('') + '</div>';
 }
 
@@ -417,8 +424,13 @@ function gameHTML() {
   if (S.phase === 'reveal') {
     return `
     <div class="card">${statusHTML()}<div class="topic">${esc(S.topic)}</div>
-      <p class="muted center">順番にオープン！（${Math.min(S.shown, S.reveal.length)} / ${S.reveal.length}）</p>
-      ${cardsHTML(false)}</div>`;
+      <p class="muted center">${Math.min(S.shown, S.reveal.length)} / ${S.reveal.length} 枚めくりました</p>
+      ${cardsHTML(false)}</div>
+    ${S.shown >= S.reveal.length
+      ? '<div class="card center"><p class="muted">結果発表…</p></div>'
+      : host
+        ? `<div class="card"><button class="btn primary big" data-act="flip">次の人をオープン（${S.shown + 1}枚目）</button></div>`
+        : '<div class="card center"><p class="muted">親が1枚ずつめくります…</p></div>'}`;
   }
   // result
   const ok = S.result && S.result.match;
@@ -499,6 +511,7 @@ document.addEventListener('click', (ev) => {
     startRound(topic, ui.limit);
   } else if (act === 'close') lockWriting('host');
   else if (act === 'open') openAnswers();
+  else if (act === 'flip') flipNext();
   else if (act === 'force') forceMatch();
   else if (act === 'reset') resetGame();
   else if (act === 'kick') kick(el.dataset.id);
