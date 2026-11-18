@@ -93,15 +93,24 @@ textarea{resize:none;min-height:84px;font-size:22px;font-weight:700;text-align:c
 .check input{width:20px;height:20px}
 
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
-.acard{border:2px solid var(--line);border-radius:14px;padding:10px;text-align:center;background:var(--bg);min-height:96px;display:flex;flex-direction:column;justify-content:center}
-.acard .who{font-size:13px;color:var(--sub)}
-.acard .ans{font-size:20px;font-weight:800;word-break:break-word}
-.acard.closed .ans{color:var(--sub)}
-.acard.open{background:var(--card)}
-.acard.new{animation:flip .5s ease}
-.acard.same{border-color:var(--ok);background:var(--ok-bg)}
-.acard.diff{border-color:var(--ng)}
-@keyframes flip{0%{transform:rotateY(90deg) scale(.9)}100%{transform:none}}
+/* めくれるカード：表（？）と裏（答え）の2面 */
+.fcard{perspective:900px;min-height:110px}
+.fcard .inner{position:relative;width:100%;height:100%;min-height:110px;transform-style:preserve-3d;transition:transform .6s cubic-bezier(.3,.7,.3,1.2)}
+.fcard.flipped .inner{transform:rotateY(180deg)}
+.fcard.new .inner{animation:flip .7s cubic-bezier(.3,.7,.3,1.2)}
+.fcard .face{position:absolute;inset:0;border:2px solid var(--line);border-radius:14px;padding:10px;text-align:center;display:flex;flex-direction:column;justify-content:center;-webkit-backface-visibility:hidden;backface-visibility:hidden}
+.fcard .front{background:repeating-linear-gradient(45deg,var(--accent) 0 10px,#ff8a5f 10px 20px);border-color:var(--accent);color:#fff}
+.fcard .front .who{color:#fff;opacity:.9}
+.fcard .front .mark{font-size:34px;font-weight:800;line-height:1.1}
+.fcard .back{background:var(--card);transform:rotateY(180deg)}
+.fcard .who{font-size:13px;color:var(--sub)}
+.fcard .ans{font-size:20px;font-weight:800;word-break:break-word}
+.fcard.next .inner{animation:wiggle 1.4s ease-in-out infinite}
+.fcard.same .back{border-color:var(--ok);background:var(--ok-bg)}
+.fcard.diff .back{border-color:var(--ng)}
+@keyframes flip{0%{transform:rotateY(0)}100%{transform:rotateY(180deg)}}
+@keyframes wiggle{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+@media (prefers-reduced-motion: reduce){.fcard .inner,.fcard.new .inner,.fcard.next .inner{animation:none;transition:none}}
 
 .result{text-align:center;padding:18px 10px;border-radius:16px;margin-bottom:12px}
 .result.ok{background:var(--ok-bg);color:var(--ok)}
