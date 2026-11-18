@@ -60,7 +60,7 @@ function hostCreate() {
     H = {
       room, players: [{ id: myId, name: myName, online: true }], phase: 'lobby', round: 0,
       topic: null, limit: 60, deadline: 0, answers: {}, submitted: {}, order: [], shown: 0,
-      result: null, startedAt: 0, matchedAt: 0, log: [],
+      result: null, startedAt: 0, endedAt: 0, log: [],
     };
     mode = 'game';
     sync();
@@ -166,7 +166,6 @@ function finish() {
   const match = texts.length > 0 && texts.every((t) => t && t === texts[0]);
   H.result = { match };
   H.phase = 'result';
-  if (match) H.matchedAt = Date.now();
   H.log.unshift({
     round: H.round, topic: topicText(H.topic), match,
     answers: H.order.map((id) => ({ name: nameOf(id), text: H.answers[id] || '' })),
@@ -178,13 +177,21 @@ function forceMatch() {
   if (!H.result || H.result.match) return;
   H.result.match = true; H.result.forced = true;
   if (H.log[0]) H.log[0].match = true;
-  H.matchedAt = Date.now();
+  sync();
+}
+
+// 親が「ここで終わる」を押した時。ここまでの成績を出す
+function endGame() {
+  if (!H || H.phase !== 'result') return;
+  clearTimers();
+  H.phase = 'end';
+  H.endedAt = Date.now();
   sync();
 }
 
 function resetGame() {
   clearTimers();
-  Object.assign(H, { phase: 'lobby', round: 0, topic: null, answers: {}, submitted: {}, order: [], shown: 0, result: null, startedAt: 0, matchedAt: 0, log: [] });
+  Object.assign(H, { phase: 'lobby', round: 0, topic: null, answers: {}, submitted: {}, order: [], shown: 0, result: null, startedAt: 0, endedAt: 0, log: [] });
   sync();
 }
 
@@ -208,7 +215,8 @@ function view() {
     players: H.players.map((p) => ({ id: p.id, name: p.name, online: p.online, submitted: !!H.submitted[p.id] })),
     reveal: H.order.map((id, i) => ({ id, name: nameOf(id), text: (showAll || i < H.shown) ? (H.answers[id] || '') : null })),
     shown: H.shown, result: H.result, lockReason: H.lockReason || '',
-    elapsed: H.startedAt ? (H.matchedAt || Date.now()) - H.startedAt : 0,
+    elapsed: H.startedAt ? (H.endedAt || Date.now()) - H.startedAt : 0,
+    matches: H.log.filter((l) => l.match).length, total: H.log.length,
     log: H.log.slice(0, 40),
   };
 }
@@ -303,7 +311,7 @@ function homeHTML() {
   return `
   <div class="card">
     <h2>全員の答えがそろうまで、終われない。</h2>
-    <p class="muted">お題に、みんなが同じ答えを書けたらクリア。そろうまで何回でも続きます。</p>
+    <p class="muted">お題に、みんなが同じ答えを書けたらクリア。何問でも続けて遊べます。</p>
     <label for="name">あなたの名前</label>
     <input id="name" type="text" maxlength="12" placeholder="例：たろう" value="${esc(myName)}">
     ${room ? joinBox + '<div class="divider">または</div>' + createBox : createBox + '<div class="divider">または</div>' + joinBox}
@@ -317,14 +325,15 @@ function homeHTML() {
       <li>親が「お題を出す」と、全員の画面に「〇から始まる△△」が出ます。</li>
       <li>制限時間のうちに、それぞれ答えを書きます（ほかの人には見えません）。</li>
       <li>時間切れか全員が決定すると締め切り。親が「次の人をオープン」を押すたびに、答えのカードが1枚ずつめくれます。</li>
-      <li>全員そろえばクリア。そろわなければ次のお題へ。</li>
+      <li>全員そろえば一致！ 一致してもしなくても、次のお題へ続けられます。</li>
+      <li>親が「ここで終わる」を押すと、何問中何問一致したかが出ます。</li>
     </ol>
     <p class="muted" style="margin-top:8px">答えは<b>ひらがなで書く</b>のがルールです。ひらがな・カタカナ・空白の違いは同じ答えとみなします（漢字は読みを調べないので一致になりません）。表記ゆれは親が「一致にする」で認められます。親は画面を閉じないでください（部屋が終わります）。</p>
   </div>`;
 }
 
 function statusHTML() {
-  return `<div class="status"><span>部屋 <span class="room">${esc(S.room)}</span></span><span>${S.round ? S.round + '回目' : '準備中'}・${S.players.filter((p) => p.online).length}人</span></div>`;
+  return `<div class="status"><span>部屋 <span class="room">${esc(S.room)}</span></span><span>${S.round ? S.round + '問目' : '準備中'}・${S.players.filter((p) => p.online).length}人</span></div>`;
 }
 
 function chipsHTML(withState, kickable) {
@@ -376,7 +385,7 @@ function cardsHTML(final) {
 function logHTML() {
   if (!S.log.length) return '';
   return `<div class="card"><h3>これまでのお題</h3><ul class="log">${S.log.map((l) => `
-    <li><div class="q">${l.round}回目：${esc(l.topic)} ${l.match ? '<span class="m">一致！</span>' : ''}</div>
+    <li><div class="q">${l.round}問目：${esc(l.topic)} ${l.match ? '<span class="m">一致！</span>' : ''}</div>
     <div class="a">${l.answers.map((a) => esc(a.name) + '「' + esc(a.text || '白紙') + '」').join('　')}</div></li>`).join('')}</ul></div>`;
 }
 
@@ -432,21 +441,34 @@ function gameHTML() {
         ? `<div class="card"><button class="btn primary big" data-act="flip">次の人をオープン（${S.shown + 1}枚目）</button></div>`
         : '<div class="card center"><p class="muted">親が1枚ずつめくります…</p></div>'}`;
   }
-  // result
+  if (S.phase === 'end') {
+    const rate = S.total ? Math.round((S.matches / S.total) * 100) : 0;
+    return `
+    <div class="card">
+      <div class="result ok">
+        <div class="t">おしまい！</div>
+        <div>${S.total}問中 <b style="font-size:26px">${S.matches}</b>問 一致しました</div>
+      </div>
+      <div class="stats"><div><b>${S.matches}/${S.total}</b>一致した問題</div><div><b>${rate}%</b>一致した割合</div><div><b>${fmtTime(S.elapsed)}</b>遊んだ時間</div></div>
+    </div>
+    ${host ? '<div class="card"><button class="btn primary big" data-act="reset">最初からもう一度</button></div>' : '<div class="card center"><p class="muted">親が次のゲームを始めるのを待っています…</p></div>'}
+    ${logHTML()}`;
+  }
+  // result（1問ごとの結果。一致してもしなくても次のお題へ進める）
   const ok = S.result && S.result.match;
   return `
   <div class="card">
     ${statusHTML()}
     <div class="result ${ok ? 'ok' : 'ng'}">
       <div class="t">${ok ? '一致！' : 'そろわず…'}</div>
-      <div>${ok ? (S.result.forced ? '親が一致と認めました。おつかれさまでした！' : 'みんなの答えがそろいました。おつかれさまでした！') : '次のお題で、もう一度そろえよう。'}</div>
+      <div>${ok ? (S.result.forced ? '親が一致と認めました。' : 'みんなの答えがそろいました！') : '次のお題で、そろえよう。'}</div>
     </div>
     <div class="topic">${esc(S.topic)}</div>
     ${cardsHTML(true)}
-    <div class="stats"><div><b>${S.round}</b>回目</div><div><b>${fmtTime(S.elapsed)}</b>${ok ? 'かかった時間' : '経過'}</div></div>
+    <div class="stats"><div><b>${S.matches}/${S.total}</b>ここまでの一致</div><div><b>${fmtTime(S.elapsed)}</b>経過</div></div>
     ${host && !ok ? '<button class="btn ghost" data-act="force">表記ゆれなので一致にする</button>' : ''}
   </div>
-  ${host ? (ok ? '<div class="card"><button class="btn primary big" data-act="reset">最初からもう一度</button></div>' : hostPanelHTML('次のお題')) : `<div class="card center"><p class="muted">${ok ? 'クリアです！' : '親が次のお題を出すのを待っています…'}</p></div>`}
+  ${host ? hostPanelHTML(`次のお題（${S.round + 1}問目）`) + '<div class="card"><button class="btn" data-act="end">ここで終わる（結果を見る）</button></div>' : '<div class="card center"><p class="muted">親が次のお題を出すのを待っています…</p></div>'}
   ${logHTML()}`;
 }
 
@@ -514,6 +536,7 @@ document.addEventListener('click', (ev) => {
   else if (act === 'flip') flipNext();
   else if (act === 'force') forceMatch();
   else if (act === 'reset') resetGame();
+  else if (act === 'end') endGame();
   else if (act === 'kick') kick(el.dataset.id);
 });
 
