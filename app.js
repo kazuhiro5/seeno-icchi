@@ -43,7 +43,7 @@ let mode = 'home';        // home | connecting | game | error
 let S = null;              // 親から届いた最新の状態
 let errMsg = '';
 let peer = null, hostConn = null, isHost = false;
-let lastKey = '', myText = '', myDone = false, localDeadline = 0, sendTimer = null;
+let lastKey = '', myText = '', myDone = false, myRound = '', localDeadline = 0, sendTimer = null;
 const COUNTS = [3, 5, 10, 15, 20];
 const ui = { count: 5, limit: 60 };
 
@@ -60,7 +60,7 @@ function hostCreate() {
     isHost = true;
     H = {
       room, players: [{ id: myId, name: myName, online: true }], phase: 'lobby', round: 0,
-      topic: null, limit: 60, deadline: 0, answers: {}, submitted: {}, order: [], shown: 0,
+      topic: null, limit: 60, deadline: 0, answers: {}, submitted: {}, order: [], opened: [],
       result: null, startedAt: 0, endedAt: 0, log: [], qTotal: 0, used: [], usedThemes: [],
     };
     mode = 'game';
@@ -97,12 +97,19 @@ function hostHandle(pid, m, c) {
   if (m.t === 'join') {
     const name = String(m.name || '').trim().slice(0, 12) || '名なし';
     const p = H.players.find((x) => x.id === pid);
-    if (p) { p.name = name; p.online = true; }
+    if (p) { p.name = name; p.online = true; p.left = false; }
     else {
-      if (H.players.length >= MAX_PLAYERS) { if (c) c.send({ t: 'full' }); return; }
+      if (H.players.filter((x) => !x.left).length >= MAX_PLAYERS) { if (c) c.send({ t: 'full' }); return; }
       H.players.push({ id: pid, name, online: true });
     }
     sync();
+  } else if (m.t === 'leave') {
+    // 参加者が退出した。準備中・おしまいの画面なら一覧から消し、ゲーム中なら名前を残して外す
+    if (H.phase === 'lobby' || H.phase === 'end') H.players = H.players.filter((x) => x.id !== pid);
+    else { const p = H.players.find((x) => x.id === pid); if (p) { p.online = false; p.left = true; } }
+    conns.delete(pid);
+    if (c) setTimeout(() => { try { c.close(); } catch (e) { /* noop */ } }, 200);
+    if (!checkAllSubmitted()) sync();
   } else if (m.t === 'answer') {
     if (H.phase !== 'writing') return;
     H.answers[pid] = String(m.text || '').slice(0, 40);
@@ -127,8 +134,8 @@ function clearTimers() {
 function startRound(topic, limit) {
   clearTimers();
   H.round += 1; H.phase = 'writing'; H.topic = topic; H.limit = limit;
-  H.answers = {}; H.submitted = {}; H.result = null; H.order = []; H.shown = 0;
-  H.deadline = Date.now() + limit * 1000;
+  H.answers = {}; H.submitted = {}; H.result = null; H.order = []; H.opened = [];
+  H.deadline = Date.now() + limit * 1000; H.barLimit = limit;
   if (!H.startedAt) H.startedAt = Date.now();
   writeTimer = setTimeout(() => lockWriting('time'), limit * 1000 + 400);
   sync();
@@ -165,22 +172,33 @@ function lockWriting(reason) {
   sync();
 }
 
+// 時間切れのあと、親が時間を足す。書いていた答えは残したまま、書く画面に戻す
+function extendTime(sec) {
+  if (!H || H.phase !== 'locked' || H.lockReason !== 'time') return;
+  clearTimers();
+  H.phase = 'writing';
+  H.deadline = Date.now() + sec * 1000; H.barLimit = sec;
+  writeTimer = setTimeout(() => lockWriting('time'), sec * 1000 + 400);
+  sync();
+}
+
+// 答えのカードを全部裏向きで並べる。めくる順番は親がタップして決める
 function openAnswers() {
   if (!H || H.phase !== 'locked') return;
   clearTimers();
   H.phase = 'reveal';
   H.order = H.players.filter((p) => p.online || p.id in H.answers).map((p) => p.id);
-  H.shown = 0;
+  H.opened = [];
   if (!H.order.length) { finish(); return; }
-  flipNext(); // 「せーので オープン」で1枚目をめくる
+  sync();
 }
 
-// 親が押すたびに1枚めくる。最後の1枚をめくったら少し間をおいて結果へ
-function flipNext() {
-  if (!H || H.phase !== 'reveal' || H.shown >= H.order.length) return;
-  H.shown += 1;
+// 親がタップしたカードを1枚めくる。全部めくったら少し間をおいて結果へ
+function flipCard(id) {
+  if (!H || H.phase !== 'reveal' || !H.order.includes(id) || H.opened.includes(id)) return;
+  H.opened.push(id);
   sync();
-  if (H.shown >= H.order.length) revealTimer = setTimeout(finish, REVEAL_MS);
+  if (H.opened.length >= H.order.length) revealTimer = setTimeout(finish, REVEAL_MS);
 }
 
 function finish() {
@@ -214,7 +232,8 @@ function endGame() {
 
 function resetGame() {
   clearTimers();
-  Object.assign(H, { phase: 'lobby', round: 0, topic: null, answers: {}, submitted: {}, order: [], shown: 0, result: null, startedAt: 0, endedAt: 0, log: [], qTotal: 0, used: [], usedThemes: [] });
+  H.players = H.players.filter((p) => !p.left);
+  Object.assign(H, { phase: 'lobby', round: 0, topic: null, answers: {}, submitted: {}, order: [], opened: [], result: null, startedAt: 0, endedAt: 0, log: [], qTotal: 0, used: [], usedThemes: [] });
   sync();
 }
 
@@ -232,12 +251,12 @@ const nameOf = (id) => { const p = H.players.find((x) => x.id === id); return p 
 function view() {
   const showAll = H.phase === 'result';
   return {
-    room: H.room, phase: H.phase, round: H.round, host: myId,
-    topic: H.topic ? topicText(H.topic) : '', limit: H.limit,
+    room: H.room, phase: H.phase, round: H.round, host: myId, startedAt: H.startedAt,
+    topic: H.topic ? topicText(H.topic) : '', limit: H.barLimit || H.limit, deadline: H.deadline,
     remaining: Math.max(0, H.deadline - Date.now()),
-    players: H.players.map((p) => ({ id: p.id, name: p.name, online: p.online, submitted: !!H.submitted[p.id] })),
-    reveal: H.order.map((id, i) => ({ id, name: nameOf(id), text: (showAll || i < H.shown) ? (H.answers[id] || '') : null })),
-    shown: H.shown, result: H.result, lockReason: H.lockReason || '',
+    players: H.players.filter((p) => !p.left).map((p) => ({ id: p.id, name: p.name, online: p.online, submitted: !!H.submitted[p.id] })),
+    reveal: H.order.map((id) => ({ id, name: nameOf(id), text: (showAll || H.opened.includes(id)) ? (H.answers[id] || '') : null })),
+    shown: H.opened.length, lastOpened: H.opened[H.opened.length - 1] || '', result: H.result, lockReason: H.lockReason || '',
     elapsed: H.startedAt ? (H.endedAt || Date.now()) - H.startedAt : 0,
     matches: H.log.filter((l) => l.match).length, total: H.log.length, qTotal: H.qTotal,
     log: H.log.slice(0, 40),
@@ -277,6 +296,7 @@ function connectHost() {
     if (m.t === 'state') { S = m.s; mode = 'game'; render(); }
     else if (m.t === 'full') fail('部屋がいっぱいです（最大' + MAX_PLAYERS + '人）。');
     else if (m.t === 'kicked') { hostConn = null; fail('親が部屋から外しました。'); }
+    else if (m.t === 'closed') { hostConn = null; fail('親が退出したので、部屋が終わりました。'); }
   });
   c.on('close', () => {
     if (hostConn !== c || mode === 'error') return;
@@ -289,6 +309,74 @@ function sendAnswer(done) {
   const m = { t: 'answer', text: myText, done };
   if (isHost) hostHandle(myId, m);
   else if (hostConn && hostConn.open) hostConn.send(m);
+}
+
+/* ---------- 退出（1回目で警告、5秒以内にもう一度押すと退出） ---------- */
+let leaveArmed = false, leaveTimer = null, leaving = false;
+function leaveHTML() {
+  const warn = isHost
+    ? '親が退出すると部屋が終わり、全員の接続が切れます。本当に退出しますか？'
+    : '本当に退出しますか？';
+  return `<div class="leave">
+    <p id="leaveWarn" class="err" ${leaveArmed ? '' : 'hidden'}>${warn}</p>
+    <button id="leaveBtn" class="btn ${leaveArmed ? 'danger' : 'ghost'}" data-act="leave">${leaveArmed ? 'もう一度押すと退出します' : '退出する'}</button>
+  </div>`;
+}
+function setLeaveArmed(on) {
+  leaveArmed = on;
+  clearTimeout(leaveTimer);
+  if (on) leaveTimer = setTimeout(() => setLeaveArmed(false), 5000);
+  const box = document.querySelector('.leave');
+  if (box) box.outerHTML = leaveHTML();
+}
+function doLeave() {
+  leaving = true;
+  clearTimeout(leaveTimer);
+  if (isHost) {
+    conns.forEach((c) => { try { if (c.open) c.send({ t: 'closed' }); } catch (e) { /* noop */ } });
+  } else {
+    const c = hostConn; hostConn = null;
+    try { if (c && c.open) c.send({ t: 'leave' }); } catch (e) { /* noop */ }
+  }
+  setTimeout(() => { try { peer.destroy(); } catch (e) { /* noop */ } location.href = location.pathname; }, 300);
+}
+
+/* ---------- 音（お題が出た時の「デデン」。この場で作る音） ---------- */
+let actx = null;
+let muted = (() => { try { return localStorage.getItem('si-mute') === '1'; } catch (e) { return false; } })();
+function unlockAudio() {
+  try {
+    if (!actx) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return; actx = new AC(); }
+    if (actx.state === 'suspended') actx.resume();
+    const src = actx.createBufferSource(); src.buffer = actx.createBuffer(1, 1, 22050); src.connect(actx.destination); src.start(0);
+  } catch (e) { /* 音が出せなくても遊べる */ }
+}
+function hit(t, f, d, vol) {
+  const out = actx.createGain();
+  out.gain.setValueAtTime(0.0001, t);
+  out.gain.exponentialRampToValueAtTime(vol, t + 0.012);
+  out.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  const lp = actx.createBiquadFilter();
+  lp.type = 'lowpass'; lp.frequency.setValueAtTime(2600, t); lp.frequency.exponentialRampToValueAtTime(450, t + d);
+  lp.connect(out); out.connect(actx.destination);
+  [['sawtooth', f, 0.5], ['square', f * 1.006, 0.35], ['sawtooth', f / 2, 0.5], ['sine', f / 4, 0.8]].forEach(([type, fr, g0]) => {
+    const o = actx.createOscillator(); o.type = type; o.frequency.setValueAtTime(fr, t);
+    const g = actx.createGain(); g.gain.value = g0;
+    o.connect(g); g.connect(lp); o.start(t); o.stop(t + d + 0.05);
+  });
+}
+function playDeden() {
+  if (muted || !actx) return;
+  try {
+    if (actx.state === 'suspended') actx.resume();
+    const t = actx.currentTime + 0.03;
+    hit(t, 233.1, 0.16, 0.32);        // デ
+    hit(t + 0.2, 233.1, 0.75, 0.38);  // デン
+  } catch (e) { /* noop */ }
+}
+function updateMuteBtn() {
+  const b = $('#muteBtn');
+  if (b) { b.textContent = muted ? '🔇' : '🔊'; b.setAttribute('aria-label', muted ? '音を出す' : '音を消す'); b.title = muted ? '音を出す' : '音を消す'; }
 }
 
 function fail(msg) { errMsg = msg; mode = 'error'; banner(''); render(); }
@@ -310,10 +398,13 @@ function render() {
     const key = S.phase + ':' + S.round;
     if (S.phase === 'writing') {
       if (key === lastKey) { updateWriting(); return; }
-      myText = ''; myDone = false; localDeadline = Date.now() + S.remaining;
+      // 新しい問題の時だけ答えを空にして音を鳴らす（時間の追加で戻った時は答えを残す）
+      const qKey = S.round + '|' + S.topic + '|' + S.startedAt;
+      if (qKey !== myRound) { myRound = qKey; myText = ''; myDone = false; playDeden(); }
+      localDeadline = Date.now() + S.remaining;
     }
     lastKey = key;
-    app.innerHTML = gameHTML();
+    app.innerHTML = gameHTML() + leaveHTML();
     if (S.phase === 'writing') { updateWriting(); tick(); }
   }
 
@@ -347,7 +438,7 @@ function homeHTML() {
       <li>ほかの人は同じページを開き、番号を入れて参加します。</li>
       <li>親が問題数と書く時間を選んで「スタート」。全員の画面に、ランダムなお題「〇から始まる△△」が出ます。</li>
       <li>制限時間のうちに、それぞれ答えを書きます（ほかの人には見えません）。</li>
-      <li>時間切れか全員が決定すると締め切り。親が「次の人をオープン」を押すたびに、答えのカードが1枚ずつめくれます。</li>
+      <li>時間切れか全員が決定すると締め切り（時間切れの時は、親が時間を足せます）。親が「せーので オープン！」を押すと答えのカードが裏向きで並び、親がタップした人から1枚ずつめくれます。</li>
       <li>全員そろえば一致！ 一致してもしなくても、次の問題へ進みます。</li>
       <li>最後の問題が終わると、何問中何問一致したかが出ます。</li>
     </ol>
@@ -392,14 +483,16 @@ function cardsHTML(final) {
     const top = Object.keys(count).sort((a, b) => count[b] - count[a])[0];
     groups = { top, many: top && count[top] > 1 };
   }
-  return '<div class="cards">' + S.reveal.map((r, i) => {
+  return '<div class="cards">' + S.reveal.map((r) => {
     const open = r.text !== null;
+    const tappable = !final && !open && isHost;
     let cls = 'fcard' + (open ? ' flipped' : '');
-    if (!final && open && i === S.shown - 1) cls += ' new';
-    if (!final && !open && i === S.shown) cls += ' next';
+    if (!final && open && r.id === S.lastOpened) cls += ' new';
+    if (tappable) cls += ' tap';
     if (final && groups) cls += (S.result && S.result.match) || (groups.many && norm(r.text) === groups.top) ? ' same' : ' diff';
     const ans = open ? (r.text ? esc(r.text) : '（白紙）') : '';
-    return `<div class="${cls}"><div class="inner">
+    const attrs = tappable ? ` data-act="flipcard" data-id="${esc(r.id)}" role="button" aria-label="${esc(r.name)}のカードをめくる"` : '';
+    return `<div class="${cls}"${attrs}><div class="inner">
       <div class="face front"><div class="who">${esc(r.name)}</div><div class="mark">？</div></div>
       <div class="face back"><div class="who">${esc(r.name)}</div><div class="ans">${ans}</div></div>
     </div></div>`;
@@ -448,11 +541,15 @@ function gameHTML() {
     const head = { time: '時間切れ！', all: '全員書き終わりました', host: '締め切りました' }[S.lockReason] || '締め切りました';
     return `
     <div class="card">${statusHTML()}
-      <div class="result ng" style="margin-bottom:10px"><div class="t">${head}</div><div>${host ? '準備ができたら、合図してオープンしてください。' : '親の「せーの」でオープンします。'}</div></div>
+      <div class="result ng" style="margin-bottom:10px"><div class="t">${head}</div><div>${host ? (S.lockReason === 'time' ? '時間を足すか、合図してオープンしてください。' : '準備ができたら、合図してオープンしてください。') : '親の「せーの」でオープンします。'}</div></div>
       <div class="topic">${esc(S.topic)}</div>
     </div>
     <div class="card"><h3>あなたの答え</h3><div class="topic-preview">${myText ? esc(myText) : '（白紙）'}</div></div>
-    ${host ? '<div class="card"><button class="btn primary big" data-act="open">せーので オープン！</button></div>' : ''}`;
+    ${host ? `<div class="card">
+      ${S.lockReason === 'time' ? `<h3>時間を足す</h3><div class="row">
+        <button class="btn" data-act="extend" data-sec="15">＋15秒</button>
+        <button class="btn" data-act="extend" data-sec="30">＋30秒</button></div>` : ''}
+      <button class="btn primary big" data-act="open">せーので オープン！</button></div>` : ''}`;
   }
   if (S.phase === 'reveal') {
     return `
@@ -462,8 +559,8 @@ function gameHTML() {
     ${S.shown >= S.reveal.length
       ? '<div class="card center"><p class="muted">結果発表…</p></div>'
       : host
-        ? `<div class="card"><button class="btn primary big" data-act="flip">次の人をオープン（${S.shown + 1}枚目）</button></div>`
-        : '<div class="card center"><p class="muted">親が1枚ずつめくります…</p></div>'}`;
+        ? '<div class="card center"><p><b>めくりたい人のカードをタップ</b>してください</p></div>'
+        : '<div class="card center"><p class="muted">親がカードを1枚ずつめくります…</p></div>'}`;
   }
   if (S.phase === 'end') {
     const rate = S.total ? Math.round((S.matches / S.total) * 100) : 0;
@@ -530,6 +627,7 @@ document.addEventListener('click', (ev) => {
     if (!name) { err.textContent = '名前を入れてください。'; $('#name').focus(); return; }
     myName = name.slice(0, 12); store.set('si-name', myName);
     if (typeof Peer === 'undefined') { err.textContent = '通信の部品を読み込めませんでした。ページを読み込み直してください。'; return; }
+    unlockAudio(); // iPhoneでは、ここで一度触っておかないと音が出ない
     if (act === 'create') hostCreate();
     else {
       const room = ($('#room').value || '').replace(/\D/g, '');
@@ -548,13 +646,21 @@ document.addEventListener('click', (ev) => {
     clearTimeout(sendTimer);
     sendAnswer(myDone);
     updateWriting();
+  } else if (act === 'mute') {
+    muted = !muted;
+    try { localStorage.setItem('si-mute', muted ? '1' : '0'); } catch (e) { /* noop */ }
+    updateMuteBtn();
+    if (!muted) { unlockAudio(); playDeden(); } // 音を戻した時に試しに鳴らす
+  } else if (act === 'leave') {
+    if (leaveArmed) doLeave(); else setLeaveArmed(true);
   } else if (!isHost) {
     return;
   } else if (act === 'start') startGame();
   else if (act === 'next') nextQuestion();
   else if (act === 'close') lockWriting('host');
   else if (act === 'open') openAnswers();
-  else if (act === 'flip') flipNext();
+  else if (act === 'extend') extendTime(Number(el.dataset.sec) || 15);
+  else if (act === 'flipcard') flipCard(el.dataset.id);
   else if (act === 'force') forceMatch();
   else if (act === 'reset') resetGame();
   else if (act === 'end') endGame();
@@ -575,7 +681,9 @@ document.addEventListener('change', (ev) => {
   else if (t.id === 'limit') ui.limit = Number(t.value) || 60;
 });
 window.addEventListener('beforeunload', (e) => {
-  if (isHost && H && H.players.length > 1) { e.preventDefault(); e.returnValue = ''; }
+  if (!leaving && isHost && H && H.players.length > 1) { e.preventDefault(); e.returnValue = ''; }
 });
+document.addEventListener('pointerdown', unlockAudio, { once: true });
 
+updateMuteBtn();
 render();
