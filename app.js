@@ -114,7 +114,7 @@ function hostHandle(pid, m, c) {
 function checkAllSubmitted() {
   if (!H || H.phase !== 'writing') return false;
   const on = H.players.filter((p) => p.online);
-  if (on.length && on.every((p) => H.submitted[p.id])) { closeWriting(); return true; }
+  if (on.length && on.every((p) => H.submitted[p.id])) { lockWriting('all'); return true; }
   return false;
 }
 
@@ -129,12 +129,21 @@ function startRound(topic, limit) {
   H.answers = {}; H.submitted = {}; H.result = null; H.order = []; H.shown = 0;
   H.deadline = Date.now() + limit * 1000;
   if (!H.startedAt) H.startedAt = Date.now();
-  writeTimer = setTimeout(closeWriting, limit * 1000 + 400);
+  writeTimer = setTimeout(() => lockWriting('time'), limit * 1000 + 400);
   sync();
 }
 
-function closeWriting() {
+// 書くのを締め切る。開くのは親の「せーので オープン」を待つ
+function lockWriting(reason) {
   if (!H || H.phase !== 'writing') return;
+  clearTimers();
+  H.phase = 'locked';
+  H.lockReason = reason;
+  sync();
+}
+
+function openAnswers() {
+  if (!H || H.phase !== 'locked') return;
   clearTimers();
   H.phase = 'reveal';
   H.order = H.players.filter((p) => p.online || p.id in H.answers).map((p) => p.id);
@@ -195,7 +204,7 @@ function view() {
     remaining: Math.max(0, H.deadline - Date.now()),
     players: H.players.map((p) => ({ id: p.id, name: p.name, online: p.online, submitted: !!H.submitted[p.id] })),
     reveal: H.order.map((id, i) => ({ id, name: nameOf(id), text: (showAll || i < H.shown) ? (H.answers[id] || '') : null })),
-    shown: H.shown, result: H.result,
+    shown: H.shown, result: H.result, lockReason: H.lockReason || '',
     elapsed: H.startedAt ? (H.matchedAt || Date.now()) - H.startedAt : 0,
     log: H.log.slice(0, 40),
   };
@@ -304,7 +313,7 @@ function homeHTML() {
       <li>ほかの人は同じページを開き、番号を入れて参加します。</li>
       <li>親が「お題を出す」と、全員の画面に「〇から始まる△△」が出ます。</li>
       <li>制限時間のうちに、それぞれ答えを書きます（ほかの人には見えません）。</li>
-      <li>時間になると、答えが1人ずつ順番に開きます。</li>
+      <li>時間切れか全員が決定すると締め切り。親の「せーので オープン」で、答えが1人ずつ順番に開きます。</li>
       <li>全員そろえばクリア。そろわなければ次のお題へ。</li>
     </ol>
     <p class="muted" style="margin-top:8px">ひらがな・カタカナ・空白の違いは同じ答えとみなします。表記ゆれは親が「一致にする」で認められます。親は画面を閉じないでください（部屋が終わります）。</p>
@@ -394,6 +403,16 @@ function gameHTML() {
       ${host ? '<button class="btn" data-act="close">ここで締め切る</button>' : ''}
     </div>`;
   }
+  if (S.phase === 'locked') {
+    const head = { time: '時間切れ！', all: '全員書き終わりました', host: '締め切りました' }[S.lockReason] || '締め切りました';
+    return `
+    <div class="card">${statusHTML()}
+      <div class="result ng" style="margin-bottom:10px"><div class="t">${head}</div><div>${host ? '準備ができたら、合図してオープンしてください。' : '親の「せーの」でオープンします。'}</div></div>
+      <div class="topic">${esc(S.topic)}</div>
+    </div>
+    <div class="card"><h3>あなたの答え</h3><div class="topic-preview">${myText ? esc(myText) : '（白紙）'}</div></div>
+    ${host ? '<div class="card"><button class="btn primary big" data-act="open">せーので オープン！</button></div>' : ''}`;
+  }
   if (S.phase === 'reveal') {
     return `
     <div class="card">${statusHTML()}<div class="topic">${esc(S.topic)}</div>
@@ -477,7 +496,8 @@ document.addEventListener('click', (ev) => {
     }
     ui.gen = randTopic(); ui.custom = '';
     startRound(topic, ui.limit);
-  } else if (act === 'close') closeWriting();
+  } else if (act === 'close') lockWriting('host');
+  else if (act === 'open') openAnswers();
   else if (act === 'force') forceMatch();
   else if (act === 'reset') resetGame();
   else if (act === 'kick') kick(el.dataset.id);
