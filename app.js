@@ -64,6 +64,7 @@ function hostCreate() {
       result: null, startedAt: 0, endedAt: 0, log: [], qTotal: 0, used: [], usedThemes: [],
     };
     mode = 'game';
+    keepAwake();
     sync();
   });
   peer.on('connection', (c) => {
@@ -92,6 +93,18 @@ function hostCreate() {
     if (!H) fail('部屋を作れませんでした（' + e.type + '）。通信環境を確かめて、もう一度お試しください。');
   });
 }
+
+// 親のスマホの画面が消えないようにする（消えると部屋が終わるため）。
+// 別のアプリから戻った時は消える設定に戻っているので、もう一度お願いする
+let wakeLock = null;
+async function keepAwake() {
+  try {
+    if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
+    if (wakeLock && !wakeLock.released) return;
+    wakeLock = await navigator.wakeLock.request('screen');
+  } catch (e) { /* 対応していない端末では何もしない */ }
+}
+document.addEventListener('visibilitychange', () => { if (isHost && !leaving) keepAwake(); });
 
 function hostHandle(pid, m, c) {
   if (m.t === 'join') {
@@ -156,6 +169,13 @@ function startGame() {
   if (!H || H.phase !== 'lobby') return;
   H.qTotal = ui.count; H.used = []; H.usedThemes = [];
   startRound(newTopic(), ui.limit);
+}
+
+// 答えにくいお題を引き直す。問題数は増やさず、同じ問題番号のまま新しいお題にする
+function passTopic() {
+  if (!H || H.phase !== 'writing') return;
+  H.round -= 1;
+  startRound(newTopic(), H.limit);
 }
 
 function nextQuestion() {
@@ -374,6 +394,29 @@ function playDeden() {
     hit(t + 0.2, 233.1, 0.75, 0.38);  // デン
   } catch (e) { /* noop */ }
 }
+// 時間切れの「カンカン」：鐘の音（倍音をずらして重ねる）を2回
+function bell(t, f, d, vol) {
+  const out = actx.createGain();
+  out.gain.setValueAtTime(0.0001, t);
+  out.gain.exponentialRampToValueAtTime(vol, t + 0.004);
+  out.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  out.connect(actx.destination);
+  [[1, 0.6], [2.76, 0.3], [5.4, 0.15], [8.93, 0.08]].forEach(([mul, g0]) => {
+    const o = actx.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(f * mul, t);
+    const g = actx.createGain(); g.gain.value = g0;
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + d + 0.05);
+  });
+}
+function playKankan() {
+  if (muted || !actx) return;
+  try {
+    if (actx.state === 'suspended') actx.resume();
+    const t = actx.currentTime + 0.03;
+    bell(t, 1046.5, 0.45, 0.4);         // カン
+    bell(t + 0.22, 1046.5, 0.7, 0.4);   // カン
+  } catch (e) { /* noop */ }
+}
+
 function updateMuteBtn() {
   const b = $('#muteBtn');
   if (b) { b.textContent = muted ? '🔇' : '🔊'; b.setAttribute('aria-label', muted ? '音を出す' : '音を消す'); b.title = muted ? '音を出す' : '音を消す'; }
@@ -403,6 +446,7 @@ function render() {
       if (qKey !== myRound) { myRound = qKey; myText = ''; myDone = false; playDeden(); }
       localDeadline = Date.now() + S.remaining;
     }
+    if (S.phase === 'locked' && S.lockReason === 'time' && key !== lastKey) playKankan();
     lastKey = key;
     app.innerHTML = gameHTML() + leaveHTML();
     if (S.phase === 'writing') { updateWriting(); tick(); }
@@ -437,13 +481,14 @@ function homeHTML() {
       <li>1人が「部屋を作る」。出てきた4けたの番号を、みんなに伝えます。</li>
       <li>ほかの人は同じページを開き、番号を入れて参加します。</li>
       <li>親が問題数と書く時間を選んで「スタート」。全員の画面に、ランダムなお題「〇から始まる△△」が出ます。</li>
-      <li>制限時間のうちに、それぞれ答えを書きます（ほかの人には見えません）。</li>
+      <li>制限時間のうちに、それぞれ答えを書きます（ほかの人には見えません）。答えにくいお題は、親がパスできます。</li>
       <li>時間切れか全員が決定すると締め切り（時間切れの時は、親が時間を足せます）。親が「せーので オープン！」を押すと答えのカードが裏向きで並び、親がタップした人から1枚ずつめくれます。</li>
-      <li>全員そろえば一致！ 一致してもしなくても、次の問題へ進みます。</li>
+      <li>全員そろえば成功。成功でも失敗でも、次の問題へ進みます。</li>
       <li>最後の問題が終わると、何問中何問一致したかが出ます。</li>
     </ol>
     <p class="muted" style="margin-top:8px">答えは<b>ひらがなで書く</b>のがルールです。ひらがな・カタカナ・空白の違いは同じ答えとみなします（漢字は読みを調べないので一致になりません）。表記ゆれは親が「一致にする」で認められます。親は画面を閉じないでください（部屋が終わります）。</p>
-  </div>`;
+  </div>
+  <p class="notice">ご注意：スマホどうしを直接つなぐ仕組みのため、同じ部屋の人どうしで通信用の住所（IPアドレス）が相手に伝わります。名前や答えは保存していません。</p>`;
 }
 
 function statusHTML() {
@@ -502,8 +547,8 @@ function cardsHTML(final) {
 function logHTML() {
   if (!S.log.length) return '';
   return `<div class="card"><h3>これまでのお題</h3><ul class="log">${S.log.map((l) => `
-    <li><div class="q">${l.round}問目：${esc(l.topic)} ${l.match ? '<span class="m">一致！</span>' : ''}</div>
-    <div class="a">${l.answers.map((a) => esc(a.name) + '「' + esc(a.text || '白紙') + '」').join('　')}</div></li>`).join('')}</ul></div>`;
+    <li><div class="q">${l.round}問目：${esc(l.topic)} ${l.match ? '<span class="m">成功</span>' : '<span class="x">失敗</span>'}</div>
+    ${l.answers.map((a) => `<div class="a">${esc(a.name)}「${esc(a.text || '白紙')}」</div>`).join('')}</li>`).join('')}</ul></div>`;
 }
 
 function gameHTML() {
@@ -528,21 +573,21 @@ function gameHTML() {
       <div id="timer" class="timer">のこり <b>--</b> 秒</div>
     </div>
     <div class="card">
-      <label for="answer">あなたの答え（ほかの人には見えません）</label>
-      <p class="hint">✍️ <b>ひらがなで書いてね</b>（漢字だと、同じ言葉でも一致になりません）</p>
+      <label for="answer">あなたの答え</label>
       <textarea id="answer" maxlength="40" placeholder="ひらがなで書く" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
       <button id="doneBtn" class="btn primary big" data-act="done">これで決定</button>
     </div>
     <div class="card"><h3>書き終わった人</h3><div id="chipsBox"></div>
-      ${host ? '<button class="btn" data-act="close">ここで締め切る</button>' : ''}
+      ${host ? `<div class="row"><button class="btn" data-act="pass">このお題をパス</button>
+        <button class="btn" data-act="close">ここで締め切る</button></div>` : ''}
     </div>`;
   }
   if (S.phase === 'locked') {
     const head = { time: '時間切れ！', all: '全員書き終わりました', host: '締め切りました' }[S.lockReason] || '締め切りました';
     return `
     <div class="card">${statusHTML()}
-      <div class="result ng" style="margin-bottom:10px"><div class="t">${head}</div><div>${host ? (S.lockReason === 'time' ? '時間を足すか、合図してオープンしてください。' : '準備ができたら、合図してオープンしてください。') : '親の「せーの」でオープンします。'}</div></div>
       <div class="topic">${esc(S.topic)}</div>
+      <div class="result ng" style="margin:10px 0 0"><div class="t">${head}</div></div>
     </div>
     <div class="card"><h3>あなたの答え</h3><div class="topic-preview">${myText ? esc(myText) : '（白紙）'}</div></div>
     ${host ? `<div class="card">
@@ -554,23 +599,19 @@ function gameHTML() {
   if (S.phase === 'reveal') {
     return `
     <div class="card">${statusHTML()}<div class="topic">${esc(S.topic)}</div>
-      <p class="muted center">${Math.min(S.shown, S.reveal.length)} / ${S.reveal.length} 枚めくりました</p>
+      <p class="muted center">${Math.min(S.shown, S.reveal.length)} / ${S.reveal.length}</p>
       ${cardsHTML(false)}</div>
-    ${S.shown >= S.reveal.length
-      ? '<div class="card center"><p class="muted">結果発表…</p></div>'
-      : host
-        ? '<div class="card center"><p><b>めくりたい人のカードをタップ</b>してください</p></div>'
-        : '<div class="card center"><p class="muted">親がカードを1枚ずつめくります…</p></div>'}`;
+    ${S.shown < S.reveal.length && host ? '<div class="card center"><p><b>回答者のカードをタップ</b></p></div>' : ''}`;
   }
   if (S.phase === 'end') {
     const rate = S.total ? Math.round((S.matches / S.total) * 100) : 0;
     return `
     <div class="card">
       <div class="result ok">
-        <div class="t">おしまい！</div>
-        <div>${S.total}問中 <b style="font-size:26px">${S.matches}</b>問 一致しました</div>
+        <div class="t">結果発表</div>
+        <div class="score">${S.total}問中${S.matches}問一致</div>
       </div>
-      <div class="stats"><div><b>${S.matches}/${S.total}</b>一致した問題</div><div><b>${rate}%</b>一致した割合</div><div><b>${fmtTime(S.elapsed)}</b>遊んだ時間</div></div>
+      <div class="stats"><div><b>${rate}%</b>一致した割合</div><div><b>${fmtTime(S.elapsed)}</b>遊んだ時間</div></div>
     </div>
     ${host ? '<div class="card"><button class="btn primary big" data-act="reset">最初からもう一度</button></div>' : '<div class="card center"><p class="muted">親が次のゲームを始めるのを待っています…</p></div>'}
     ${logHTML()}`;
@@ -581,8 +622,7 @@ function gameHTML() {
   <div class="card">
     ${statusHTML()}
     <div class="result ${ok ? 'ok' : 'ng'}">
-      <div class="t">${ok ? '一致！' : 'そろわず…'}</div>
-      <div>${ok ? (S.result.forced ? '親が一致と認めました。' : 'みんなの答えがそろいました！') : (S.round < S.qTotal ? '次の問題で、そろえよう。' : '惜しい！')}</div>
+      <div class="t">${ok ? '成功' : '失敗'}</div>
     </div>
     <div class="topic">${esc(S.topic)}</div>
     ${cardsHTML(true)}
@@ -658,6 +698,7 @@ document.addEventListener('click', (ev) => {
   } else if (act === 'start') startGame();
   else if (act === 'next') nextQuestion();
   else if (act === 'close') lockWriting('host');
+  else if (act === 'pass') passTopic();
   else if (act === 'open') openAnswers();
   else if (act === 'extend') extendTime(Number(el.dataset.sec) || 15);
   else if (act === 'flipcard') flipCard(el.dataset.id);
