@@ -438,7 +438,7 @@ function render() {
   else if (mode === 'connecting') app.innerHTML = '<div class="card center"><div class="spinner"></div><p>つないでいます…</p></div>';
   else if (mode === 'error') app.innerHTML = `<div class="card center"><p class="err">${esc(errMsg)}</p><button class="btn primary" data-act="home">はじめに戻る</button></div>`;
   else {
-    const key = S.phase + ':' + S.round;
+    const key = S.phase + ':' + S.round + ':' + S.topic; // お題をパスした時も描き直す
     if (S.phase === 'writing') {
       if (key === lastKey) { updateWriting(); return; }
       // 新しい問題の時だけ答えを空にして音を鳴らす（時間の追加で戻った時は答えを残す）
