@@ -114,6 +114,10 @@ textarea{resize:none;min-height:84px;font-size:22px;font-weight:700;text-align:c
 @keyframes wiggle{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
 @media (prefers-reduced-motion: reduce){.fcard .inner,.fcard.new .inner,.fcard.tap .inner{animation:none;transition:none}}
 
+.notice{font-size:12px;color:var(--sub);margin:0 4px 14px;line-height:1.6}
+.result .score{font-size:24px;font-weight:800;margin-top:4px}
+.log .x{color:var(--ng);font-weight:700}
+.log .a + .a{margin-top:0}
 .btn.danger{background:var(--ng);border-color:var(--ng);color:#fff}
 .leave{margin-top:6px;text-align:center}
 .leave p{margin:0 0 4px;font-size:14px}
