@@ -488,7 +488,7 @@ function homeHTML() {
     </ol>
     <p class="muted" style="margin-top:8px">答えは<b>ひらがなで書く</b>のがルールです。ひらがな・カタカナ・空白の違いは同じ答えとみなします（漢字は読みを調べないので一致になりません）。表記ゆれは親が「一致にする」で認められます。親は画面を閉じないでください（部屋が終わります）。</p>
   </div>
-  <p class="notice">ご注意：スマホどうしを直接つなぐ仕組みのため、同じ部屋の人どうしで通信用の住所（IPアドレス）が相手に伝わります。名前や答えは保存していません。</p>`;
+  <p class="notice">ご注意：スマホどうしを直接つなぐ仕組みのため、同じ部屋の人どうしで通信用の住所（IPアドレス）が相手に伝わります。名前や答えは保存していません。<br><a href="https://kazuhiro5.github.io/binhi-mura/seeno-icchi.html" target="_blank" rel="noopener">このアプリについて</a>　<a href="https://kazuhiro5.github.io/binhi-mura/" target="_blank" rel="noopener">Binhi村の決まり</a></p>`;
 }
 
 function statusHTML() {
